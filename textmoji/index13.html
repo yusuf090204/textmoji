@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dinding Emoji Interaktif</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            overflow: hidden; /* Mencegah scroll */
+        }
+
+        #app-container {
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+
+        #emoji-wall-container {
+            flex-grow: 1; /* Membuat dinding mengisi ruang yang tersedia */
+            position: relative; /* Kunci untuk posisi absolut anak-anaknya */
+            background: linear-gradient(135deg, #1e3a8a, #3b82f6);
+            overflow: hidden; /* Dinding tidak bisa di-scroll */
+            z-index: 1;
+        }
+
+        .emoji-item {
+            position: absolute; /* Posisi acak relatif terhadap dinding */
+            font-size: 3.5rem; /* Ukuran emoji diperbesar */
+            background-color: transparent;
+            color: #fff;
+            text-shadow: 0 3px 8px rgba(0, 0, 0, 0.5); /* Bayangan teks diperjelas */
+            animation: popIn 0.5s ease-out forwards;
+            opacity: 0;
+            transform: scale(0.5);
+            will-change: transform, opacity;
+        }
+
+        @keyframes popIn {
+            to {
+                transform: scale(1);
+                opacity: 1;
+            }
+        }
+
+        #control-panel {
+            flex-shrink: 0; /* Mencegah panel menyusut */
+            padding: 1.5rem;
+            background-color: #111827; /* Warna solid untuk pemisah */
+            z-index: 10;
+        }
+        
+        .loader {
+            border: 4px solid rgba(255,255,255,0.3);
+            border-top: 4px solid #fff;
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="bg-gray-900">
+    
+    <div id="app-container">
+        <!-- Layar utama untuk menampilkan emoji -->
+        <div id="emoji-wall-container">
+            <div id="placeholder-text" class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-white text-center opacity-50">
+                <h1 class="text-4xl font-bold">Dinding Emoji Interaktif</h1>
+                <p>Kirim emoji dari panel di bawah!</p>
+            </div>
+        </div>
+
+        <!-- Panel kontrol untuk input pengguna -->
+        <div id="control-panel">
+            <div class="w-full max-w-2xl mx-auto">
+                <!-- Pesan untuk Mode Demo -->
+                <div id="demo-mode-banner" class="hidden text-center text-yellow-400 bg-yellow-900/50 rounded-md py-2 px-4 mb-4 text-sm">
+                    Anda dalam <b>Mode Demo</b>. Fitur online (real-time & AI) dinonaktifkan.
+                </div>
+                <div class="flex items-center gap-4">
+                    <input id="text-input" type="text" class="flex-grow p-3 bg-gray-700 text-white border-2 border-transparent focus:border-blue-400 focus:ring-0 rounded-xl placeholder-gray-400" placeholder="Ketik kalimat di sini...">
+                    <button id="generate-btn" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-5 rounded-xl transition-all transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-blue-300 flex items-center justify-center h-[52px] w-[52px]">
+                        <span id="btn-icon">🚀</span>
+                        <div id="loader" class="loader hidden"></div>
+                    </button>
+                </div>
+                <div id="error-message" class="text-red-400 text-center mt-2 text-sm hidden"></div>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        // --- PENTING: KONFIGURASI PENGGUNA (OPSIONAL) ---
+        // Untuk mengaktifkan fitur online (real-time & AI tanpa batas), isi konfigurasi di bawah ini.
+        // Jika Anda biarkan kosong, aplikasi akan berjalan dalam mode demo offline.
+
+        // 1. Konfigurasi Firebase:
+        const USER_FIREBASE_CONFIG = {
+          // apiKey: "...", authDomain: "...", ...
+        };
+
+        // 2. Kunci API Google AI (Gemini):
+        const USER_GEMINI_API_KEY = ""; // <-- TEMPEL KUNCI API GEMINI ANDA DI SINI
+
+        // --- KODE APLIKASI ---
+
+        // Cek apakah di lingkungan Canvas atau konfigurasi pengguna lengkap
+        const isCanvasEnvironment = typeof __firebase_config !== 'undefined';
+        const isUserConfigured = USER_FIREBASE_CONFIG && USER_FIREBASE_CONFIG.apiKey && USER_GEMINI_API_KEY;
+        
+        const runOnlineMode = isCanvasEnvironment || isUserConfigured;
+
+        if (runOnlineMode) {
+            // Jalankan mode online penuh dengan koneksi ke Firebase dan AI
+            runOnline();
+        } else {
+            // Jalankan mode demo offline jika tidak ada konfigurasi
+            runOfflineDemo();
+        }
+
+        // --- ELEMEN DOM UMUM ---
+        const textInput = document.getElementById('text-input');
+        const generateBtn = document.getElementById('generate-btn');
+        const btnIcon = document.getElementById('btn-icon');
+        const loader = document.getElementById('loader');
+        const errorMessage = document.getElementById('error-message');
+        const emojiWall = document.getElementById('emoji-wall-container');
+        const placeholderText = document.getElementById('placeholder-text');
+        let existingRects = []; // Untuk deteksi tumpang tindih
+
+        function isOverlapping(rect1, rect2) {
+            const padding = 10; 
+            return !(rect1.right + padding < rect2.left || 
+                     rect1.left - padding > rect2.right || 
+                     rect1.bottom + padding < rect2.top || 
+                     rect1.top - padding > rect2.bottom);
+        }
+
+        function displayEmojiOnWall(emojiString) {
+            placeholderText.classList.add('hidden');
+            
+            const emojiElement = document.createElement('div');
+            emojiElement.className = 'emoji-item';
+            emojiElement.textContent = emojiString;
+            
+            emojiElement.style.visibility = 'hidden';
+            emojiWall.appendChild(emojiElement);
+            const newElementRect = emojiElement.getBoundingClientRect();
+            
+            let bestPosition = { top: 0, left: 0 };
+            const maxAttempts = 50;
+            const wallRect = emojiWall.getBoundingClientRect();
+
+            for (let i = 0; i < maxAttempts; i++) {
+                const randomTopPercent = Math.random() * 90 + 5;
+                const randomLeftPercent = Math.random() * 90 + 5;
+
+                const potentialTop = (wallRect.height * randomTopPercent) / 100;
+                const potentialLeft = (wallRect.width * randomLeftPercent) / 100;
+
+                if (potentialTop + newElementRect.height > wallRect.height || potentialLeft + newElementRect.width > wallRect.width) continue;
+
+                const potentialRect = {
+                    top: potentialTop, left: potentialLeft,
+                    right: potentialLeft + newElementRect.width,
+                    bottom: potentialTop + newElementRect.height,
+                };
+
+                let hasOverlap = existingRects.some(existingRect => isOverlapping(potentialRect, existingRect));
+
+                if (!hasOverlap || i === maxAttempts - 1) {
+                    bestPosition = { top: randomTopPercent, left: randomLeftPercent };
+                    if (!hasOverlap) break;
+                }
+            }
+            
+            emojiElement.remove();
+            
+            const finalRect = {
+                top: (wallRect.height * bestPosition.top) / 100,
+                left: (wallRect.width * bestPosition.left) / 100,
+                width: newElementRect.width, height: newElementRect.height,
+                right: (wallRect.width * bestPosition.left) / 100 + newElementRect.width,
+                bottom: (wallRect.height * bestPosition.top) / 100 + newElementRect.height,
+            };
+            existingRects.push(finalRect);
+
+            emojiElement.style.top = `${bestPosition.top}%`;
+            emojiElement.style.left = `${bestPosition.left}%`;
+            emojiElement.style.visibility = 'visible';
+            emojiWall.appendChild(emojiElement);
+        }
+
+        function setLoading(isLoading) {
+            generateBtn.disabled = isLoading;
+            btnIcon.classList.toggle('hidden', isLoading);
+            loader.classList.toggle('hidden', !isLoading);
+            if (isLoading) errorMessage.classList.add('hidden');
+        }
+
+        // --- LOGIKA MODE DEMO (OFFLINE) ---
+        function runOfflineDemo() {
+            console.log("Menjalankan Mode Demo Offline.");
+            document.getElementById('demo-mode-banner').classList.remove('hidden');
+
+            const demoDictionary = {
+                "hai": "👋", "kucing": "🐱", "anjing": "🐶", "cinta": "❤️", "kopi": "☕",
+                "pizza": "🍕", "mobil": "�", "roket": "🚀", "buku": "📖", "uang": "💰",
+                "senang": "😊", "sedih": "😢", "tertawa": "😂", "marah": "😠", "api": "🔥"
+            };
+
+            async function handleSubmissionDemo() {
+                const userInput = textInput.value.trim().toLowerCase();
+                if (!userInput) return;
+
+                setLoading(true);
+                
+                // Simulasi loading
+                await new Promise(resolve => setTimeout(resolve, 300));
+
+                const words = userInput.split(/\s+/);
+                const emojiResult = words.map(word => demoDictionary[word] || '❓').join('');
+                
+                displayEmojiOnWall(emojiResult || '🤔');
+                textInput.value = '';
+                setLoading(false);
+            }
+
+            generateBtn.addEventListener('click', handleSubmissionDemo);
+            textInput.addEventListener('keydown', (e) => e.key === 'Enter' && handleSubmissionDemo());
+            window.addEventListener('resize', () => {
+                existingRects = [];
+                document.querySelectorAll('.emoji-item').forEach(el => el.remove());
+            });
+        }
+
+        // --- LOGIKA MODE ONLINE ---
+        async function runOnline() {
+            console.log("Menjalankan Mode Online Penuh.");
+            const { initializeApp } = await import("https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js");
+            const { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } = await import("https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js");
+            const { getFirestore, collection, addDoc, onSnapshot, serverTimestamp, query, where, getDocs } = await import("https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js");
+
+            const firebaseConfig = isCanvasEnvironment ? JSON.parse(__firebase_config) : USER_FIREBASE_CONFIG;
+            const geminiApiKey = isCanvasEnvironment ? "" : USER_GEMINI_API_KEY;
+            const appId = typeof __app_id !== 'undefined' ? __app_id : (firebaseConfig.projectId || 'default-emoji-wall');
+
+            const app = initializeApp(firebaseConfig);
+            const auth = getAuth(app);
+            const db = getFirestore(app);
+
+            let isAuthReady = false;
+            let userId = null;
+            const displayedDocs = new Set();
+            
+            onAuthStateChanged(auth, async (user) => {
+                if (user) {
+                    userId = user.uid;
+                    isAuthReady = true;
+                    await fetchInitialEmojis();
+                    listenForNewEmojis();
+                }
+            });
+            
+            try {
+                if (isCanvasEnvironment && typeof __initial_auth_token !== 'undefined') {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch(e) {
+                errorMessage.textContent = "Gagal melakukan otentikasi.";
+                errorMessage.classList.remove('hidden');
+            }
+
+            async function fetchInitialEmojis() {
+                if (!isAuthReady) return;
+                const collectionPath = `/artifacts/${appId}/public/data/emoji-submissions`;
+                const q = query(collection(db, collectionPath), where("createdAt", ">", new Date(Date.now() - 3600 * 1000)));
+                const querySnapshot = await getDocs(q);
+                querySnapshot.forEach((doc) => {
+                    if (!displayedDocs.has(doc.id)) {
+                        displayEmojiOnWall(doc.data().emojiString);
+                        displayedDocs.add(doc.id);
+                    }
+                });
+            }
+
+            function listenForNewEmojis() {
+                if (!isAuthReady) return;
+                const collectionPath = `/artifacts/${appId}/public/data/emoji-submissions`;
+                const q = query(collection(db, collectionPath), where("createdAt", ">", new Date(Date.now() - 3600 * 1000)));
+                onSnapshot(q, (snapshot) => {
+                    snapshot.docChanges().forEach((change) => {
+                        if (change.type === "added" && !displayedDocs.has(change.doc.id)) {
+                            displayEmojiOnWall(change.doc.data().emojiString);
+                            displayedDocs.add(change.doc.id);
+                        }
+                    });
+                });
+            }
+
+            async function handleSubmissionOnline() {
+                if (!isAuthReady) {
+                    errorMessage.textContent = 'Belum terhubung. Mohon tunggu...';
+                    errorMessage.classList.remove('hidden');
+                    return;
+                }
+                const userInput = textInput.value.trim();
+                if (!userInput) return;
+
+                setLoading(true);
+                try {
+                    const prompt = `Tugas kamu adalah menjadi penerjemah teks ke emoji. Ubah teks berikut menjadi rangkaian emoji yang relevan secara visual. Hanya kembalikan emoji, tanpa teks atau penjelasan tambahan. Buat seringkas mungkin. Contoh: "astronot minum kopi di bulan" -> 🧑‍🚀☕🌙. Teks untuk diubah: "${userInput}"`;
+                    const payload = { contents: [{ role: "user", parts: [{ text: prompt }] }] };
+                    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiApiKey}`;
+                    const response = await fetch(apiUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                    if (!response.ok) throw new Error(`API request gagal: ${response.status}`);
+                    const result = await response.json();
+                    const generatedText = result.candidates[0].content.parts[0].text.trim();
+                    if (generatedText) {
+                        const collectionPath = `/artifacts/${appId}/public/data/emoji-submissions`;
+                        await addDoc(collection(db, collectionPath), {
+                            emojiString: generatedText,
+                            createdAt: serverTimestamp(),
+                            author: userId
+                        });
+                        textInput.value = '';
+                    } else { throw new Error('API tidak mengembalikan emoji.'); }
+                } catch (error) {
+                    errorMessage.textContent = 'Maaf, terjadi kesalahan. Coba lagi.';
+                    errorMessage.classList.remove('hidden');
+                } finally {
+                    setLoading(false);
+                }
+            }
+
+            generateBtn.addEventListener('click', handleSubmissionOnline);
+            textInput.addEventListener('keydown', (e) => e.key === 'Enter' && handleSubmissionOnline());
+            window.addEventListener('resize', () => {
+                existingRects = [];
+                document.querySelectorAll('.emoji-item').forEach(el => el.remove());
+                fetchInitialEmojis();
+            });
+        }
+
+    </script>
+
+</body>
+</html>
+�
